@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temp
+*.jpg
+*.jpeg
+*.png
+*.gif
+tmp/
+temp/
+
+# Project specific
+last_screenshot.jpg
+camera_preview.jpg
+yolo11n.pt
+*.pt

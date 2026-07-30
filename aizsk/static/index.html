@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 实时受力分析系统</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #0f0f1a; color: #e0e0e0; min-height: 100vh; display: flex; flex-direction: column;
+}
+header {
+  background: linear-gradient(135deg,#1a1a2e,#16213e); padding: 14px 24px;
+  border-bottom: 1px solid #2a2a4a; display: flex; align-items: center; gap: 16px;
+}
+header h1 { font-size: 20px; font-weight: 600; background: linear-gradient(90deg,#00d4ff,#7b2ff7); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+header .dot { width: 10px; height: 10px; border-radius: 50%; background: #ff4444; display: inline-block; }
+header .dot.on { background: #44ff44; }
+header .dot.warn { background: #ffaa00; }
+
+.main { display: flex; flex: 1; padding: 16px; gap: 16px; }
+.video-section { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.video-wrapper {
+  position: relative; background: #1a1a2e; border-radius: 12px; border: 1px solid #2a2a4a;
+  overflow: hidden; flex: 1; display: flex; align-items: center; justify-content: center;
+  min-height: 540px;
+}
+.video-wrapper video, .video-wrapper canvas {
+  position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain;
+}
+.video-wrapper canvas { z-index: 2; pointer-events: none; }
+.video-wrapper video { z-index: 1; cursor: crosshair; }
+
+.sidebar { width: 320px; display: flex; flex-direction: column; gap: 12px; }
+.panel { background: #1a1a2e; border-radius: 12px; border: 1px solid #2a2a4a; padding: 16px; }
+.panel h3 { font-size: 13px; color: #8888aa; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 1px; }
+
+.info-row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #1f1f35; font-size: 13px; }
+.info-row:last-child { border-bottom: none; }
+.info-label { color: #8888aa; }
+.info-value { font-weight: 500; }
+
+.btn {
+  background: linear-gradient(135deg,#2b2b5a,#1a1a3e); border: 1px solid #3a3a6a;
+  color: #e0e0e0; padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 13px;
+  transition: all .2s; width: 100%; margin-bottom: 8px;
+}
+.btn:hover { background: linear-gradient(135deg,#3b3b7a,#2a2a5e); border-color: #5a5a9a; }
+.btn:last-child { margin-bottom: 0; }
+.btn.primary { background: linear-gradient(135deg,#3b2b6a,#2a1a5e); border-color: #7b2ff7; }
+
+.scene-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.scene-btn {
+  padding: 7px; border: 1px solid #2a2a4a; border-radius: 6px; background: #12122a;
+  color: #aaaacc; cursor: pointer; font-size: 12px; transition: all .2s; text-align: center;
+}
+.scene-btn:hover { border-color: #5a5a9a; }
+.scene-btn.on { border-color: #7b2ff7; background: #2a1a5e; color: #d0b0ff; }
+
+.force-list { list-style: none; font-size: 13px; }
+.force-item { display: flex; align-items: center; padding: 3px 0; }
+.force-dot { width: 12px; height: 12px; border-radius: 50%; margin-right: 10px; flex-shrink: 0; }
+
+#angleControl { margin-top: 10px; display: none; }
+#angleControl label { font-size: 12px; color: #8888aa; }
+#angleSlider { width: 100%; margin-top: 4px; }
+
+.instructions { font-size: 13px; line-height: 1.6; color: #8888aa; }
+.instructions kbd { background: #2a2a4a; padding: 2px 6px; border-radius: 4px; font-size: 12px; color: #e0e0e0; }
+
+@media (max-width:900px) { .main { flex-direction: column; } .sidebar { width: 100%; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>⚡ AI 实时受力分析</h1>
+  <span class="dot" id="statusDot"></span>
+  <span id="statusText" style="font-size:13px;color:#8888aa;">初始化中...</span>
+</header>
+
+<div class="main">
+  <div class="video-section">
+    <div class="video-wrapper" id="videoWrapper">
+      <video id="webcam" autoplay playsinline muted></video>
+      <canvas id="overlay"></canvas>
+      <div id="noCameraMsg" style="position:absolute;z-index:3;color:#8888aa;text-align:center;display:none;">
+        <p style="font-size:18px;margin-bottom:8px;">📷 未检测到摄像头</p>
+        <p style="font-size:13px;">请允许摄像头访问权限</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="sidebar">
+    <!-- 选中物体 -->
+    <div class="panel">
+      <h3>📦 选中物体</h3>
+      <div class="info-row"><span class="info-label">状态</span><span class="info-value" id="objStatus">等待摄像头</span></div>
+      <div class="info-row"><span class="info-label">类别</span><span class="info-value" id="objClass">—</span></div>
+      <div class="info-row"><span class="info-label">跟踪ID</span><span class="info-value" id="objId">—</span></div>
+      <div class="info-row"><span class="info-label">速率</span><span class="info-value" id="objSpeed">—</span></div>
+      <div class="info-row">
+        <span class="info-label">质量 (kg)</span>
+        <input type="number" id="massInput" value="" placeholder="未知" min="0" step="0.1"
+               style="width:80px;background:#12122a;border:1px solid #2a2a4a;color:#e0e0e0;border-radius:4px;padding:2px 6px;text-align:right;font-size:13px;">
+      </div>
+    </div>
+
+    <!-- 场景 -->
+    <div class="panel">
+      <h3>🎯 场景选择</h3>
+      <p style="font-size:12px;color:#666;margin-bottom:8px;">点击画面物体后选择场景</p>
+      <div class="scene-grid">
+        <button class="scene-btn" data-scene="flat">水平面</button>
+        <button class="scene-btn on" data-scene="unknown">自动</button>
+        <button class="scene-btn" data-scene="incline">斜面</button>
+        <button class="scene-btn" data-scene="free_fall">自由落体</button>
+        <button class="scene-btn" data-scene="pendulum">悬挂</button>
+      </div>
+      <div id="angleControl">
+        <label>斜面角度: <span id="angleDisplay">30</span>°</label>
+        <input type="range" id="angleSlider" min="0" max="80" value="30">
+      </div>
+    </div>
+
+    <!-- 受力分析 -->
+    <div class="panel">
+      <h3>📐 受力分析</h3>
+      <ul class="force-list" id="forceList">
+        <li style="color:#8888aa;font-size:13px;">选中物体后显示</li>
+      </ul>
+      <div id="analysisNote" style="font-size:12px;color:#666;margin-top:8px;display:none;"></div>
+    </div>
+
+    <!-- 控制 -->
+    <div class="panel">
+      <button class="btn primary" id="btnToggle">⏹ 停止摄像头</button>
+      <p class="instructions">
+        点击画面中的物体选中它<br>
+        <kbd>R</kbd> 重置选择
+      </p>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===== 状态 =====
+let videoStream = null;
+let isRunning = false;
+let detectInterval = null;
+let selectedTrackId = null;
+let currentScene = 'unknown';
+let currentAngle = 30;
+const massInput = document.getElementById('massInput');
+function getMass() { return parseFloat(massInput.value) || 0; }
+
+const video = document.getElementById('webcam');
+const overlay = document.getElementById('overlay');
+const ctx = overlay.getContext('2d');
+const statusDot = document.getElementById('statusDot');
+const statusText = document.getElementById('statusText');
+
+// ===== 颜色定义（与后端一致）=====
+const FORCE_COLORS = {
+  gravity: [0,0,255], normal: [0,255,0], friction: [255,128,0],
+  tension: [255,255,0], applied: [255,0,255], air: [200,200,200], net: [0,255,255],
+};
+const LABEL_MAP = { gravity:'G', normal:'N', friction:'f', tension:'T', applied:'F', air:'f_drag', net:'合力' };
+
+// YOLO COCO 类别 → 中文
+const CN_CLASS = {
+  person:'人', bicycle:'自行车', car:'汽车', motorcycle:'摩托车', airplane:'飞机',
+  bus:'公交车', train:'火车', truck:'卡车', boat:'船',
+  traffic_light:'红绿灯', fire_hydrant:'消防栓', stop_sign:'停止牌', parking_meter:'停车表',
+  bench:'长椅', bird:'鸟', cat:'猫', dog:'狗', horse:'马', sheep:'羊', cow:'牛',
+  elephant:'大象', bear:'熊', zebra:'斑马', giraffe:'长颈鹿',
+  backpack:'背包', umbrella:'雨伞', handbag:'手提包', tie:'领带', suitcase:'行李箱',
+  frisbee:'飞盘', skis:'滑雪板', snowboard:'滑雪板', sports_ball:'球',
+  kite:'风筝', baseball_bat:'棒球棒', baseball_glove:'棒球手套', skateboard:'滑板',
+  surfboard:'冲浪板', tennis_racket:'网球拍', bottle:'瓶子', wine_glass:'酒杯',
+  cup:'杯子', fork:'叉子', knife:'刀', spoon:'勺子', bowl:'碗',
+  banana:'香蕉', apple:'苹果', sandwich:'三明治', orange:'橙子', broccoli:'西兰花',
+  carrot:'胡萝卜', hot_dog:'热狗', pizza:'披萨', donut:'甜甜圈', cake:'蛋糕',
+  chair:'椅子', couch:'沙发', potted_plant:'盆栽', bed:'床', dining_table:'餐桌',
+  toilet:'马桶', tv:'电视', laptop:'笔记本电脑', mouse:'鼠标', remote:'遥控器',
+  keyboard:'键盘', cell_phone:'手机', microwave:'微波炉', oven:'烤箱', toaster:'烤面包机',
+  sink:'水槽', refrigerator:'冰箱', book:'书', clock:'钟', vase:'花瓶',
+  scissors:'剪刀', teddy_bear:'泰迪熊', hair_drier:'吹风机', toothbrush:'牙刷',
+};
+
+// ===== 摄像头 =====
+async function startCamera() {
+  try {
+    videoStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        width: { min: 640, ideal: 3840, max: 7680 },
+        height: { min: 480, ideal: 2160, max: 4320 },
+        frameRate: { ideal: 120 },
+        facingMode: 'environment',
+      },
+      audio: false,
+    });
+    video.srcObject = videoStream;
+    await video.play();
+    const track = videoStream.getVideoTracks()[0];
+    const cap = track.getSettings();
+    const w = cap.width || video.videoWidth || 1920;
+    const h = cap.height || video.videoHeight || 1080;
+    video.width = w; video.height = h;
+    overlay.width = w; overlay.height = h;
+    document.getElementById('noCameraMsg').style.display = 'none';
+    statusDot.className = 'dot on';
+    const resLabel = `${w}x${h}${w>=3840?' ✅ 4K':w>=1920?' ✅ 1080p':''}` +
+      (cap.frameRate ? ` @${cap.frameRate}fps` : '');
+    statusText.textContent = resLabel;
+    console.log(`Camera: ${w}x${h}`);
+    return true;
+  } catch(e) {
+    document.getElementById('noCameraMsg').style.display = 'block';
+    statusDot.className = 'dot';
+    statusText.textContent = '摄像头不可用';
+    console.error('Camera error:', e);
+    return false;
+  }
+}
+
+function stopCamera() {
+  if (videoStream) {
+    videoStream.getTracks().forEach(t => t.stop());
+    videoStream = null;
+  }
+  video.srcObject = null;
+  isRunning = false;
+  if (detectInterval) { clearInterval(detectInterval); detectInterval = null; }
+  ctx.clearRect(0, 0, overlay.width, overlay.height);
+  statusDot.className = 'dot';
+  statusText.textContent = '已停止';
+}
+
+// ===== 发送帧到后端 =====
+async function sendFrame() {
+  if (!isRunning || !video.videoWidth) return;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  const c = canvas.getContext('2d');
+  c.drawImage(video, 0, 0);
+  const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.7));
+
+  const fd = new FormData();
+  fd.append('image', blob, 'frame.jpg');
+  fd.append('scene', currentScene);
+  fd.append('angle', currentAngle);
+  fd.append('mass', getMass());
+
+  try {
+    const res = await fetch('/api/detect', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (!data.success) return;
+
+    // 自动选中物体：优先小物体（非人物体 > 小物体）
+    if (data.selected_id == null && data.detections && data.detections.length > 0) {
+      // 人排最后，非人物体按面积从小到大排（小优先）
+      const sorted = [...data.detections].sort((a, b) => {
+        const aPerson = a.class_name === 'person' ? 1 : 0;
+        const bPerson = b.class_name === 'person' ? 1 : 0;
+        if (aPerson !== bPerson) return aPerson - bPerson; // 非人优先
+        const aa = (a.bbox[2]-a.bbox[0])*(a.bbox[3]-a.bbox[1]);
+        const bb = (b.bbox[2]-b.bbox[0])*(b.bbox[3]-b.bbox[1]);
+        return aa - bb; // 小物体优先！
+      });
+      // 选排在最前面的（非人且最小）
+      const target = sorted[0];
+      // 发送点击坐标到后端选中它
+      const cx = Math.round((target.bbox[0]+target.bbox[2])/2);
+      const cy = Math.round((target.bbox[1]+target.bbox[3])/2);
+      const fd2 = new FormData();
+      fd2.append('image', blob, 'frame.jpg');
+      fd2.append('click_x', cx);
+      fd2.append('click_y', cy);
+      fd2.append('scene', currentScene);
+      fd2.append('angle', currentAngle);
+      fd2.append('mass', getMass());
+      const res2 = await fetch('/api/detect', { method: 'POST', body: fd2 });
+      const data2 = await res2.json();
+      if (data2.success) renderResults(data2);
+      return;
+    }
+
+    renderResults(data);
+  } catch(e) {
+    console.error('Detect error:', e);
+  }
+}
+
+// ===== 渲染结果到 Canvas（只画覆盖层，视频由 <video> 显示）=====
+function renderResults(data) {
+  const w = overlay.width, h = overlay.height;
+  const scale = w / 640;
+  ctx.clearRect(0, 0, w, h);
+
+  // 检测框
+  for (const det of data.detections || []) {
+    const [x1,y1,x2,y2] = det.bbox;
+    const isSel = det.selected;
+    ctx.strokeStyle = isSel ? '#00ff88' : '#ffffff';
+    ctx.lineWidth = (isSel ? 3 : 1.5) * scale;
+    ctx.strokeRect(x1, y1, x2-x1, y2-y1);
+
+    // 标签（中文）
+    const cnName = CN_CLASS[det.class_name] || det.class_name;
+    const label = `#${det.track_id} ${cnName} ${(det.confidence*100).toFixed(0)}%`;
+    ctx.fillStyle = isSel ? '#00ff88' : '#ffffff';
+    ctx.font = `${Math.round(14 * scale)}px monospace`;
+    const tw = ctx.measureText(label).width;
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(x1, y1-Math.round(20*scale), tw+8*scale, Math.round(20*scale));
+    ctx.fillStyle = isSel ? '#00ff88' : '#ffffff';
+    ctx.fillText(label, x1+4*scale, y1-5*scale);
+
+    // 选中标记：中心十字
+    if (isSel) {
+      const cx = (x1+x2)/2, cy = (y1+y2)/2;
+      ctx.strokeStyle = '#00ff88';
+      ctx.lineWidth = 1 * scale;
+      ctx.beginPath();
+      ctx.moveTo(cx-8*scale, cy); ctx.lineTo(cx+8*scale, cy);
+      ctx.moveTo(cx, cy-8*scale); ctx.lineTo(cx, cy+8*scale);
+      ctx.stroke();
+    }
+  }
+
+  // 受力分析
+  if (data.analysis && data.selected_id != null) {
+    const det = (data.detections || []).find(d => d.track_id === data.selected_id);
+    if (det) {
+      const [x1,y1,x2,y2] = det.bbox;
+      const cx = (x1+x2)/2, cy = (y1+y2)/2;
+
+      for (const f of data.analysis.forces) {
+        drawForceArrow(ctx, cx, cy, f);
+      }
+      // 合力
+      if (data.analysis.net_force && data.analysis.net_force.magnitude > 0.5) {
+        drawForceArrow(ctx, cx, cy, { ...data.analysis.net_force, type:'net', color: [0,255,255] });
+      }
+
+      // 速度向量
+      if (data.velocity) {
+        const {vx,vy} = data.velocity;
+        const len = Math.sqrt(vx*vx + vy*vy);
+        if (len > 0.5) {
+          ctx.strokeStyle = '#00ff00'; ctx.lineWidth = 2 * scale;
+          ctx.beginPath();
+          ctx.moveTo(cx, cy);
+          ctx.lineTo(cx + vx*5*scale, cy + vy*5*scale);
+          ctx.stroke();
+        }
+      }
+    }
+  }
+
+  // 更新侧栏
+  updateSidebar(data);
+}
+
+function drawForceArrow(ctx, x, y, f) {
+  // 根据画面宽度缩放箭头和字体（基准 640px）
+  const scale = overlay.width / 640;
+  const len = f.magnitude * 2.5 * scale;
+  if (len < 3) return;
+  const rad = f.angle * Math.PI / 180;
+  const ex = x + len * Math.cos(rad);
+  const ey = y + len * Math.sin(rad);
+  const [r,g,b] = f.color || FORCE_COLORS[f.type] || [255,255,255];
+
+  ctx.strokeStyle = `rgb(${r},${g},${b})`;
+  ctx.fillStyle = `rgb(${r},${g},${b})`;
+  ctx.lineWidth = Math.max(2, f.magnitude/20) * scale;
+
+  // 箭头线
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(ex, ey);
+  ctx.stroke();
+
+  // 箭头头
+  const angle = Math.atan2(ey-y, ex-x);
+  const headLen = 10 * scale;
+  ctx.beginPath();
+  ctx.moveTo(ex, ey);
+  ctx.lineTo(ex - headLen*Math.cos(angle-0.4), ey - headLen*Math.sin(angle-0.4));
+  ctx.lineTo(ex - headLen*Math.cos(angle+0.4), ey - headLen*Math.sin(angle+0.4));
+  ctx.closePath();
+  ctx.fill();
+
+  // 标签
+  if (f.label) {
+    ctx.font = `${Math.round(12 * scale)}px monospace`;
+    ctx.fillStyle = `rgb(${r},${g},${b})`;
+    ctx.fillText(f.label, ex + 8*scale, ey - 5*scale);
+  }
+}
+
+// ===== 更新侧栏 =====
+function updateSidebar(data) {
+  const sel = (data.detections || []).find(d => d.selected);
+  const objStatus = document.getElementById('objStatus');
+  const objClass = document.getElementById('objClass');
+  const objId = document.getElementById('objId');
+  const objSpeed = document.getElementById('objSpeed');
+  const forceList = document.getElementById('forceList');
+  const analysisNote = document.getElementById('analysisNote');
+
+  if (sel) {
+    objStatus.textContent = '已选中';
+    objStatus.style.color = '#44ff88';
+    objClass.textContent = CN_CLASS[sel.class_name] || sel.class_name;
+    objId.textContent = '#' + sel.track_id;
+    objSpeed.textContent = (data.velocity?.speed || 0).toFixed(1) + ' 像素/帧';
+    selectedTrackId = sel.track_id;
+  } else {
+    objStatus.textContent = data.selected_id ? '已选中' : '未选中';
+    objStatus.style.color = data.selected_id ? '#44ff88' : '#ff4444';
+    objClass.textContent = data.selected_id ? '?' : '—';
+    objId.textContent = data.selected_id ? '#' + data.selected_id : '—';
+    objSpeed.textContent = '—';
+    selectedTrackId = data.selected_id;
+  }
+
+  // 受力列表
+  forceList.innerHTML = '';
+  if (data.analysis && data.analysis.forces) {
+    const massKnown = parseFloat(massInput.value) > 0;
+    for (const f of data.analysis.forces) {
+      const [r,g,b] = f.color || FORCE_COLORS[f.type] || [255,255,255];
+      // 去掉后面的 =XXN 部分，只显示力的名称
+      const cleanLabel = f.label.replace(/=.*/, '');
+      const li = document.createElement('li');
+      li.className = 'force-item';
+      li.innerHTML = `<span class="force-dot" style="background:rgb(${r},${g},${b})"></span>${f.label}`;
+      forceList.appendChild(li);
+    }
+    if (data.analysis.net_force && data.analysis.net_force.magnitude > 0.5) {
+      const nf = data.analysis.net_force;
+      const li = document.createElement('li');
+      li.className = 'force-item';
+      li.innerHTML = `<span class="force-dot" style="background:rgb(0,255,255)"></span>${nf.label}=${nf.magnitude.toFixed(1)}N`;
+      forceList.appendChild(li);
+    }
+    if (data.analysis.note) {
+      analysisNote.textContent = data.analysis.note;
+      analysisNote.style.display = 'block';
+    } else {
+      analysisNote.style.display = 'none';
+    }
+  } else {
+    forceList.innerHTML = '<li style="color:#8888aa;font-size:13px;">选中物体后显示受力</li>';
+    analysisNote.style.display = 'none';
+  }
+}
+
+// ===== 点击选物体 =====
+video.addEventListener('click', async (e) => {
+  if (!isRunning) return;
+  const rect = video.getBoundingClientRect();
+  const scaleX = video.videoWidth / rect.width;
+  const scaleY = video.videoHeight / rect.height;
+  const x = Math.round((e.clientX - rect.left) * scaleX);
+  const y = Math.round((e.clientY - rect.top) * scaleY);
+
+  // 立即发送一帧带点击坐标
+  const canvas = document.createElement('canvas');
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video, 0, 0);
+  const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.7));
+
+  const fd = new FormData();
+  fd.append('image', blob, 'frame.jpg');
+  fd.append('click_x', x);
+  fd.append('click_y', y);
+  fd.append('scene', currentScene);
+  fd.append('angle', currentAngle);
+  fd.append('mass', getMass());
+
+  try {
+    const res = await fetch('/api/detect', { method: 'POST', body: fd });
+    const data = await res.json();
+    if (data.success) renderResults(data);
+  } catch(e) { console.error(e); }
+});
+
+// ===== 场景选择 =====
+document.querySelectorAll('.scene-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.scene-btn').forEach(b => b.classList.remove('on'));
+    btn.classList.add('on');
+    currentScene = btn.dataset.scene;
+    document.getElementById('angleControl').style.display = currentScene === 'incline' ? 'block' : 'none';
+  });
+});
+document.getElementById('angleSlider').addEventListener('input', (e) => {
+  currentAngle = parseInt(e.target.value);
+  document.getElementById('angleDisplay').textContent = currentAngle;
+});
+
+// ===== 启动/停止 =====
+document.getElementById('btnToggle').addEventListener('click', async () => {
+  if (isRunning) {
+    stopCamera();
+    document.getElementById('btnToggle').textContent = '▶ 启动摄像头';
+    statusText.textContent = '已停止';
+    statusDot.className = 'dot';
+  } else {
+    document.getElementById('btnToggle').textContent = '⏳ 启动中...';
+    const ok = await startCamera();
+    if (ok) {
+      isRunning = true;
+      document.getElementById('btnToggle').textContent = '⏹ 停止摄像头';
+      // 初始化后端
+      await fetch('/api/detect/start', { method: 'POST' });
+      // 开始周期检测（每300ms一帧）
+      detectInterval = setInterval(sendFrame, 300);
+    } else {
+      document.getElementById('btnToggle').textContent = '▶ 启动摄像头';
+    }
+  }
+});
+
+// ===== 快捷键 =====
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'r' || e.key === 'R') {
+    selectedTrackId = null;
+    document.getElementById('objStatus').textContent = '未选中';
+    document.getElementById('objStatus').style.color = '#ff4444';
+    document.getElementById('objClass').textContent = '—';
+    document.getElementById('objId').textContent = '—';
+    document.getElementById('objSpeed').textContent = '—';
+    document.getElementById('forceList').innerHTML = '<li style="color:#8888aa;font-size:13px;">选中物体后显示</li>';
+  }
+});
+
+// ===== 初始状态 =====
+statusText.textContent = '点击"启动摄像头"开始';
+console.log('AI 实时受力分析系统 v2.0 (浏览器摄像头模式)');
+</script>
+</body>
+</html>
