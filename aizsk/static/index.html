@@ -29,8 +29,8 @@ header .dot.warn { background: #ffaa00; }
 .video-wrapper video, .video-wrapper canvas {
   position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: contain;
 }
+.video-wrapper video { z-index: 1; }
 .video-wrapper canvas { z-index: 2; pointer-events: none; }
-.video-wrapper video { z-index: 1; cursor: crosshair; }
 
 .sidebar { width: 320px; display: flex; flex-direction: column; gap: 12px; }
 .panel { background: #1a1a2e; border-radius: 12px; border: 1px solid #2a2a4a; padding: 16px; }
@@ -81,9 +81,14 @@ header .dot.warn { background: #ffaa00; }
 
 <div class="main">
   <div class="video-section">
-    <div class="video-wrapper" id="videoWrapper">
-      <video id="webcam" autoplay playsinline muted></video>
+    <div class="video-wrapper" id="videoWrapper" oncontextmenu="return false;">
+      <video id="webcam" autoplay playsinline muted disablePictureInPicture
+             style="pointer-events:none;position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;z-index:1;">
+      </video>
       <canvas id="overlay"></canvas>
+      <div class="click-layer" id="clickLayer"
+           style="position:absolute;top:0;left:0;width:100%;height:100%;z-index:3;cursor:crosshair;">
+      </div>
       <div id="noCameraMsg" style="position:absolute;z-index:3;color:#8888aa;text-align:center;display:none;">
         <p style="font-size:18px;margin-bottom:8px;">📷 未检测到摄像头</p>
         <p style="font-size:13px;">请允许摄像头访问权限</p>
@@ -461,10 +466,11 @@ function updateSidebar(data) {
   }
 }
 
-// ===== 点击选物体 =====
-video.addEventListener('click', async (e) => {
+// ===== 点击选物体（点击层，非视频本身）=====
+const clickLayer = document.getElementById('clickLayer');
+clickLayer.addEventListener('click', async (e) => {
   if (!isRunning) return;
-  const rect = video.getBoundingClientRect();
+  const rect = clickLayer.getBoundingClientRect();
   const scaleX = video.videoWidth / rect.width;
   const scaleY = video.videoHeight / rect.height;
   const x = Math.round((e.clientX - rect.left) * scaleX);
