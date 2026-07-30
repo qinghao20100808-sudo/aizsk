@@ -81,6 +81,10 @@ header h1 { font-size: 20px; font-weight: 600; background: linear-gradient(90deg
 <div class="main">
   <div class="video-section">
     <div class="video-wrapper" id="videoWrapper">
+      <!-- 视频元素放在 canvas 下面，opacity:0 但仍在视口中，浏览器会持续解码 -->
+      <video id="capVideo" autoplay playsinline muted
+             style="position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;opacity:0;z-index:0;pointer-events:none;">
+      </video>
       <canvas id="displayCanvas"></canvas>
     </div>
   </div>
@@ -133,7 +137,7 @@ header h1 { font-size: 20px; font-weight: 600; background: linear-gradient(90deg
 </div>
 
 <!-- 隐藏的 video 元素，只用于接收摄像头流 -->
-<video id="hiddenVideo" autoplay playsinline muted style="position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0;"></video>
+
 
 <script>
 // ===== 状态 =====
@@ -149,7 +153,7 @@ let pendingClick = null; // {x, y} 待处理的点击
 
 const canvas = document.getElementById('displayCanvas');
 const ctx = canvas.getContext('2d');
-const hiddenVideo = document.getElementById('hiddenVideo');
+const capVideo = document.getElementById('capVideo');
 const statusDot = document.getElementById('statusDot');
 const statusText = document.getElementById('statusText');
 const massInput = document.getElementById('massInput');
@@ -180,9 +184,9 @@ async function startCamera() {
       video: { width: { min: 640, ideal: 1920, max: 3840 }, height: { min: 480, ideal: 1080, max: 2160 }, facingMode: 'environment' },
       audio: false,
     });
-    hiddenVideo.srcObject = videoStream;
-    await hiddenVideo.play();
-    const w = hiddenVideo.videoWidth || 640, h = hiddenVideo.videoHeight || 480;
+    capVideo.srcObject = videoStream;
+    await capVideo.play();
+    const w = capVideo.videoWidth || 640, h = capVideo.videoHeight || 480;
     canvas.width = w; canvas.height = h;
     statusDot.className = 'dot on';
     statusText.textContent = `摄像头 ${w}x${h}`;
@@ -199,7 +203,7 @@ async function startCamera() {
 
 function stopCamera() {
   if (videoStream) { videoStream.getTracks().forEach(t => t.stop()); videoStream = null; }
-  hiddenVideo.srcObject = null;
+  capVideo.srcObject = null;
   isRunning = false;
   if (animFrameId) { cancelAnimationFrame(animFrameId); animFrameId = null; }
   if (detectInterval) { clearInterval(detectInterval); detectInterval = null; }
@@ -210,14 +214,14 @@ function stopCamera() {
 
 // ===== 渲染循环 =====
 function renderLoop() {
-  if (!isRunning || !hiddenVideo.videoWidth) {
+  if (!isRunning || !capVideo.videoWidth) {
     animFrameId = requestAnimationFrame(renderLoop);
     return;
   }
 
   const w = canvas.width, h = canvas.height;
   // 画摄像头帧
-  ctx.drawImage(hiddenVideo, 0, 0, w, h);
+  ctx.drawImage(capVideo, 0, 0, w, h);
 
   // 如果有检测结果，画覆盖层
   if (lastDetectResult) {
@@ -326,12 +330,12 @@ function drawArrow(ctx, x, y, f, scale) {
 
 // ===== 检测请求 =====
 async function sendDetect(clickX, clickY) {
-  if (!isRunning || !hiddenVideo.videoWidth) return;
+  if (!isRunning || !capVideo.videoWidth) return;
 
   const capCanvas = document.createElement('canvas');
   capCanvas.width = canvas.width;
   capCanvas.height = canvas.height;
-  capCanvas.getContext('2d').drawImage(hiddenVideo, 0, 0);
+  capCanvas.getContext('2d').drawImage(capVideo, 0, 0);
   const blob = await new Promise(r => capCanvas.toBlob(r, 'image/jpeg', 0.7));
 
   const fd = new FormData();
