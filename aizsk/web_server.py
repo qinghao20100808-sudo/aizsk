@@ -743,28 +743,23 @@ class WebServer:
             result.detections = self._tracker.update(result.detections)
 
             # 只保留能做受力分析的小物件（过滤家具/人/大件）
-            PHYSICS_OBJECTS = {
-                # 容器类
-                "bottle", "wine_glass", "cup", "bowl", "vase",
-                # 餐具/工具类
-                "fork", "knife", "spoon", "scissors", "book", "cell_phone",
-                "remote", "mouse", "keyboard", "clock",
-                # 球类/运动
-                "sports_ball", "frisbee", "kite", "baseball_bat",
-                "baseball_glove", "tennis_racket", "skateboard",
-                # 食物类
-                "apple", "banana", "orange", "sandwich", "broccoli", "carrot",
-                "hot_dog", "pizza", "donut", "cake",
-                # 小物件
-                "teddy_bear", "toothbrush", "hair_drier", "umbrella",
-                "backpack", "handbag", "suitcase", "tie",
+            EXCLUDED_OBJECTS = {
+                "person", "bird", "cat", "dog", "horse", "sheep", "cow",
+                "elephant", "bear", "zebra", "giraffe",
+                "bed", "chair", "couch", "dining_table", "toilet",
+                "tv", "laptop", "keyboard", "mouse", "book", "clock",
+                "potted_plant", "vase", "sink", "refrigerator", "oven",
+                "microwave", "toaster", "bench", "parking_meter",
+                "fire_hydrant", "stop_sign", "traffic_light",
+                "airplane", "bus", "train", "truck", "car", "boat", "motorcycle",
+                "backpack", "handbag", "suitcase",
             }
             result.detections = [
                 d for d in result.detections
-                if d.class_name in PHYSICS_OBJECTS
+                if d.class_name not in EXCLUDED_OBJECTS
             ]
 
-            # 点击选物体
+            # 点击选物体（带兜底：点任何位置都有效）
             if click_x is not None and click_y is not None:
                 best_det = None
                 best_area = float("inf")
@@ -778,7 +773,18 @@ class WebServer:
                 if best_det:
                     self._selected_track_id = best_det.track_id
                 else:
-                    self._selected_track_id = None
+                    # 兜底：没点到物体时，在点击位置创建虚拟物体
+                    size = 30
+                    virtual_det = Detection(
+                        class_id=-1,
+                        class_name="物体",
+                        confidence=1.0,
+                        bbox=(click_x - size, click_y - size, click_x + size, click_y + size),
+                    )
+                    virtual_det.track_id = self._tracker.next_id
+                    self._tracker.update([virtual_det])
+                    self._selected_track_id = virtual_det.track_id
+                    result.detections.append(virtual_det)
 
             # 受力分析
             analysis_json = None
