@@ -738,8 +738,8 @@ class WebServer:
                 except ValueError:
                     pass
 
-            # YOLO 检测（低阈值识别更多物体，包括小物体）
-            result = self._detector.detect(frame, conf_threshold=0.15)
+            # YOLO 检测（超低阈值识别小物体）
+            result = self._detector.detect(frame, conf_threshold=0.05)
             result.detections = self._tracker.update(result.detections)
 
             # 只保留能做受力分析的小物件（过滤家具/人/大件）
