@@ -155,6 +155,22 @@ uv run python3 -m aizsk.verify
 
 ---
 
+## Known Issues & Limitations
+
+| Issue | Cause | Status |
+|-------|-------|--------|
+| Low detection rate for held/small objects | YOLO nano is limited; hand occlusion | ⚠️ Mitigated: conf threshold lowered to 0.05 |
+| Keys, pens, etc. not detected | Not in the COCO 80 classes | ❌ Unresolvable |
+| Detection box jitter | YOLO frame-to-frame instability | ⚠️ Mitigated: tracker EMA smoothing |
+| Tracking lags / loses very fast motion (>160px/s) | 200ms detection interval | ⚠️ Partially mitigated: chase + extrapolation; faster sampling possible |
+| 4K frames lag (browser camera) | Full-res JPEG upload + CPU inference | ✅ Fixed: 640 downsampling |
+| Canvas render flicker | rAF vs toBlob async | ✅ Fixed |
+| torchvision NMS crash | torch 2.13 + torchvision 0.28 + Python 3.14 incompatible | ✅ Fixed: patched ultralytics autobackend.py |
+| NNPACK warning | CPU-only torch has no NNPACK | ✅ Harmless |
+| WSL shared-camera delay | File-based frame transfer | ⚠️ ~50ms latency, 10fps cap |
+
+---
+
 ## Tech Stack
 
 | Component | Technology |

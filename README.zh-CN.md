@@ -155,6 +155,22 @@ uv run python3 -m aizsk.verify
 
 ---
 
+## 已知问题与限制
+
+| 问题 | 原因 | 状态 |
+|------|------|------|
+| 手持/小物体检测率低 | YOLO nano 能力有限，手部遮挡 | ⚠️ 缓解：置信度阈值降至 0.05 |
+| 钥匙/笔等识别不到 | 不在 COCO 80 类中 | ❌ 无法解决 |
+| 检测框抖动 | YOLO 帧间不稳定 | ⚠️ 缓解：跟踪器 EMA 平滑 |
+| 快速移动（>160px/s）跟踪滞后/跟丢 | 200ms 检测间隔限制 | ⚠️ 部分缓解：追赶 + 外推；可提高采样频率 |
+| 高分辨率卡顿（浏览器摄像头） | 全分辨率 JPEG 上传 + CPU 推理 | ✅ 已修复：640 降采样 |
+| Canvas 渲染闪烁 | requestAnimationFrame 与 toBlob 异步 | ✅ 已修复 |
+| torchvision NMS 崩溃 | torch 2.13 + torchvision 0.28 + Python 3.14 不兼容 | ✅ 已修复：patch ultralytics autobackend.py |
+| NNPACK 警告 | CPU-only torch 无 NNPACK 支持 | ✅ 无害 |
+| WSL 共享摄像头延迟 | 文件方式传输帧 | ⚠️ ~50ms 延迟，10fps 上限 |
+
+---
+
 ## 技术栈
 
 | 组件 | 技术 |
