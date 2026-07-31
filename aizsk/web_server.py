@@ -756,6 +756,9 @@ class WebServer:
                     rx1, ry1, rx2, ry2 = map(int, roi_str.split(","))
                     if self._roi_tracker.init(frame, (rx1, ry1, rx2, ry2)):
                         self._roi_tracked = TrackedObject(track_id=1, class_name="目标")
+                        # ROI 纯跟踪 bbox 稳定（模板匹配），无需重平滑：
+                        # alpha 拉高让中心/速度实时响应（重心跟随不滞后）
+                        self._roi_tracked._smooth_alpha = 0.8
                         self._selected_track_id = 1
                         self._selected_scene = SceneType.UNKNOWN  # 新目标重新推断场景
                         self._incline_angle = 0.0

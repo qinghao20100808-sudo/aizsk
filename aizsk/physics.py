@@ -81,10 +81,13 @@ class ForceAnalysis:
     mass_unknown: bool = True  # True=用户未填质量，不显示 N 值
     incline_angle: float = 0.0  # 斜面角度（度）
     note: str = ""  # 推理说明
+    net_smoothed: Optional[Force] = None  # 平滑合力（None=用实时矢量合成）
 
     @property
     def net_force(self) -> Force:
-        """计算合力"""
+        """计算合力（有平滑合力时优先返回，避免方向乱跳）"""
+        if self.net_smoothed is not None:
+            return self.net_smoothed
         fx_total = sum(f.components[0] for f in self.forces)
         fy_total = sum(f.components[1] for f in self.forces)
         magnitude = math.sqrt(fx_total**2 + fy_total**2)
@@ -130,6 +133,7 @@ class PhysicsEngine:
 
     def __init__(self):
         self.known_inclines: dict[int, float] = {}  # track_id -> angle
+        self._net_smooth: dict[int, tuple[float, float]] = {}  # track_id -> 平滑合力矢量
 
     def analyze(
         self,
@@ -183,6 +187,30 @@ class PhysicsEngine:
             # 自动推断场景
             self._auto_detect_scene(tracked, analysis, frame_size)
 
+        # 合力方向平滑（EMA 矢量）：手持微颤/模板噪声会让加速度方向
+        # 乱跳 → 合力方向乱跳（用户实测"方向乱跳"）。平滑后合力只
+        # 跟随整体运动趋势；幅度过小（近匀速）设死区不显示。
+        nf = analysis.net_force
+        fx = nf.magnitude * math.cos(math.radians(nf.angle))
+        fy = nf.magnitude * math.sin(math.radians(nf.angle))
+        prev = self._net_smooth.get(tracked.track_id, (fx, fy))
+        sx = 0.5 * fx + 0.5 * prev[0]
+        sy = 0.5 * fy + 0.5 * prev[1]
+        self._net_smooth[tracked.track_id] = (sx, sy)
+        mag = math.hypot(sx, sy)
+        if mag < 0.4:  # 死区：合力过小（近匀速）不显示，避免噪声方向
+            mag = 0.0
+            angle = 0.0
+        else:
+            angle = math.degrees(math.atan2(sy, sx)) % 360
+        analysis.net_smoothed = Force(
+            type=ForceType.NET,
+            magnitude=mag,
+            angle=angle,
+            label="合力",
+            color=(0, 255, 255),
+        )
+
         return analysis
 
     def _analyze_flat_surface(
@@ -216,12 +244,15 @@ class PhysicsEngine:
                 label=f_label,
             )
 
-            # 分析加速度方向 → 可能的外力
+            # 分析加速度方向 → 可能的外力。
+            # 阈值必须低：手持加速度常为 0.2~1.0 px/帧²，阈值过高会漏掉
+            # 外力 → 合力只剩摩擦力（方向与运动相反），用户会看到
+            # "往左移动合力却向右"（实测 bug）
             ax, ay = tracked.current_acceleration
             if abs(ax) > 0.1 or abs(ay) > 0.1:
                 applied_angle = math.degrees(math.atan2(ay, ax)) % 360
                 applied_mag = math.sqrt(ax**2 + ay**2) * 5  # 缩放
-                if applied_mag > 5:
+                if applied_mag > 0.5:
                     F_label = "F" if analysis.mass_unknown else f"F={applied_mag:.1f}N"
                     analysis.add_force(
                         ForceType.APPLIED,

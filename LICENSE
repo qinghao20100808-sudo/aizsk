@@ -1,21 +1,49 @@
-MIT License
+AI 实时受力分析系统 — 自定义许可协议
+Custom License — Commercial Use Requires Permission
 
 Copyright (c) 2026 qinghao
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+=======================================================================
+一、非商业使用（免费）
+Non-commercial use (free)
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+允许任何人免费使用、复制、修改、分发本软件及其源代码，前提是：
+- 保留上述版权声明与本许可协议全文；
+- 不得直接用于任何商业/盈利目的。
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+非商业使用范围包括但不限于：教学、学习、研究、个人项目、
+开源社区交流。
+
+You are free to use, copy, modify and distribute this software and its
+source code for non-commercial purposes (teaching, learning, research,
+personal projects, open-source community), provided that this copyright
+notice and the full license text are retained.
+
+=======================================================================
+二、商业使用（需联系授权）
+Commercial use (requires permission)
+
+任何商业/盈利目的的使用，包括但不限于：企业内部使用、销售、
+提供付费服务、集成到商业产品、商业教学平台部署等，
+必须先联系作者获得书面授权。
+
+To use this software for any commercial purpose (internal corporate use,
+resale, paid services, integration into commercial products, commercial
+teaching platforms, etc.), you MUST first contact the author for written
+permission.
+
+联系方式 / Contact: 通过 GitHub Issues 联系作者
+https://github.com/qinghao20100808-sudo/aizsk/issues
+
+=======================================================================
+三、免责声明
+Disclaimer
+
+本软件按"原样"提供，作者不对其适用性、准确性或任何直接/间接损失
+承担任何责任，无论是否已获得授权。
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY ARISING FROM THE SOFTWARE.

@@ -73,10 +73,13 @@ class TrackedObject:
         if len(self.velocities) > self.max_history:
             self.velocities.pop(0)
 
-        # 加速度 = 平滑速度差分（像素/帧²）
-        if len(self.velocities) >= 2:
-            ax = self.velocities[-1][0] - self.velocities[-2][0]
-            ay = self.velocities[-1][1] - self.velocities[-2][1]
+        # 加速度 = 短窗口速度差分（像素/帧²）。
+        # 用 2 帧窗口 (vel[-1]-vel[-3])/2 而非单帧差分：
+        # 单帧差分会把速度抖动（手持微颤/模板峰值噪声）放大成
+        # 方向乱跳的加速度 → 合力方向乱跳（用户实测反馈）
+        if len(self.velocities) >= 3:
+            ax = (self.velocities[-1][0] - self.velocities[-3][0]) / 2
+            ay = (self.velocities[-1][1] - self.velocities[-3][1]) / 2
             self.accelerations.append((ax, ay))
             if len(self.accelerations) > self.max_history:
                 self.accelerations.pop(0)

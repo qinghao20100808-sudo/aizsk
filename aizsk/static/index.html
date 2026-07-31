@@ -153,6 +153,23 @@ let currentAngle = 30;
 let lastDetectResult = null;
 let pendingClick = null; // {x, y} 待处理的点击
 
+// 重心实时外推状态：两次检测之间用速度插值，让重心标记实时跟随物体
+// （检测间隔 100ms 内物体仍会移动，纯显示旧位置会显得"重心跟不上"）
+let lastCenter = null;        // 最近一次检测的重心（640 空间）
+let lastCenterTime = 0;       // performance.now() 时刻
+let lastVel = { vx: 0, vy: 0 }; // 最近一次检测的速度（像素/帧）
+
+// 外推重心（640 空间）：lastCenter + 速度 × 已过帧数
+function extrapolatedCenter() {
+  if (!lastCenter) return null;
+  const dtFrames = detectIntervalMs > 0
+    ? (performance.now() - lastCenterTime) / detectIntervalMs : 0;
+  return {
+    cx: lastCenter[0] + lastVel.vx * dtFrames,
+    cy: lastCenter[1] + lastVel.vy * dtFrames,
+  };
+}
+
 // 框选跟踪交互状态（大疆追车式：拖拽画框选目标）
 let isDragging = false;
 let dragStart = null;  // 640 空间
@@ -301,7 +318,10 @@ function drawOverlays(data) {
     ctx.fillText(label, x1*scale+4*scale, y1*scale-5*scale);
 
     if (isSel) {
-      const cx = (x1+x2)/2*scale, cy = (y1+y2)/2*scale;
+      // 重心标记：用外推中心（两次检测之间随速度实时跟随物体）
+      const ext = extrapolatedCenter();
+      const cx = (ext ? ext.cx : (x1+x2)/2) * scale;
+      const cy = (ext ? ext.cy : (y1+y2)/2) * scale;
       ctx.strokeStyle = '#00ff88';
       ctx.lineWidth = 1 * scale;
       ctx.beginPath();
@@ -311,12 +331,13 @@ function drawOverlays(data) {
     }
   }
 
-  // 受力分析
+  // 受力分析（力箭头起点 = 外推重心，实时跟随物体）
   if (data.analysis && data.selected_id != null) {
     const det = (data.detections || []).find(d => d.track_id === data.selected_id);
     if (det) {
-      const [x1,y1,x2,y2] = det.bbox;
-      const cx = (x1+x2)/2*scale, cy = (y1+y2)/2*scale;
+      const ext = extrapolatedCenter();
+      const cx = (ext ? ext.cx : (det.bbox[0]+det.bbox[2])/2) * scale;
+      const cy = (ext ? ext.cy : (det.bbox[1]+det.bbox[3])/2) * scale;
 
       for (const f of data.analysis.forces) {
         drawArrow(ctx, cx, cy, f, scale);
@@ -333,21 +354,6 @@ function drawOverlays(data) {
           ctx.moveTo(cx, cy);
           ctx.lineTo(cx + vx*5*scale, cy + vy*5*scale);
           ctx.stroke();
-        }
-        // 运动轨迹（慢动作视觉：回放下落/移动路径）
-        if (data.velocity.trail && data.velocity.trail.length >= 2) {
-          const pts = data.velocity.trail;
-          ctx.strokeStyle = 'rgba(0,255,200,0.65)';
-          ctx.lineWidth = 2 * scale;
-          ctx.beginPath();
-          ctx.moveTo(pts[0][0]*scale, pts[0][1]*scale);
-          for (const [px,py] of pts) ctx.lineTo(px*scale, py*scale);
-          ctx.stroke();
-          // 起点标记
-          ctx.fillStyle = 'rgba(0,255,200,0.8)';
-          ctx.beginPath();
-          ctx.arc(pts[0][0]*scale, pts[0][1]*scale, 3*scale, 0, Math.PI*2);
-          ctx.fill();
         }
       }
     }
@@ -425,11 +431,22 @@ async function sendDetect(clickX, clickY, roiStr) {
     const data = await res.json();
     if (!data.success) return;
     lastDetectResult = data;
-    // 发送间隔自适应：ROI 纯跟踪便宜 → 提频；自由落体 → 100ms 高频采样（慢动作）；
-    // YOLO 识别 → 降频省带宽
+    // 保存重心外推状态：用最新检测的重心 + 速度，供两次检测之间实时插值
+    if (data.mode === 'roi' && data.detections && data.detections.length) {
+      const d0 = data.detections[0];
+      lastCenter = [(d0.bbox[0]+d0.bbox[2])/2, (d0.bbox[1]+d0.bbox[3])/2];
+      lastCenterTime = performance.now();
+      lastVel = data.velocity
+        ? { vx: data.velocity.vx || 0, vy: data.velocity.vy || 0 }
+        : { vx: 0, vy: 0 };
+    } else {
+      lastCenter = null;  // YOLO 模式不插值（检测稀疏，速度不可靠）
+    }
+    // 发送间隔自适应：ROI 纯跟踪便宜 → 100ms 高频（重心实时跟随）；
+    // 自由落体 → 100ms 高频采样（慢动作）；YOLO 识别 → 降频省带宽
     let want = 500;
     if (data.mode === 'roi') {
-      want = (data.analysis && data.analysis.scene === 'free_fall') ? 100 : 200;
+      want = (data.analysis && data.analysis.scene === 'free_fall') ? 100 : 100;
     }
     if (want !== detectIntervalMs) {
       detectIntervalMs = want;

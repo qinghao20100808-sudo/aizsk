@@ -5,9 +5,9 @@
 > An intelligent high-school physics teaching assistant built on computer vision and a physics reasoning engine.
 >
 > 🔗 Repository: https://github.com/qinghao20100808-sudo/aizsk
-> 📄 License: MIT
+> 📄 License: Custom — free for non-commercial use; **commercial use requires contacting the author**
 
-![License](https://img.shields.io/badge/license-MIT-green)
+![License](https://img.shields.io/badge/license-custom-orange)
 
 **English** | [中文](./README.zh-CN.md)
 
@@ -209,7 +209,7 @@ Built on the following open-source projects — thanks for their contributions:
 | **Flask** | Web server | https://github.com/pallets/flask |
 | **uv** | Python package management & running | https://github.com/astral-sh/uv |
 
-> ⚠️ Note: this repository's code is MIT-licensed, but the **YOLO model weights (yolo11n.pt) are AGPL-3.0** (Ultralytics license). Comply with their license terms when distributing model files.
+> ⚠️ Note: this repository is under a **custom license** — free for non-commercial use (teaching/research/personal); **commercial use requires contacting the author** first (via GitHub Issues). The **YOLO model weights (yolo11n.pt) are AGPL-3.0** (Ultralytics license). Comply with their license terms when distributing model files.
 
 ---
 
