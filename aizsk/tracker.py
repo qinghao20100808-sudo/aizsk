@@ -30,29 +30,50 @@ class TrackedObject:
     velocities: list[tuple[float, float]] = field(default_factory=list)
     accelerations: list[tuple[float, float]] = field(default_factory=list)
     max_history: int = 30  # 保存近 30 帧历史
+    # 平滑状态（EMA 抑制 YOLO 检测框抖动）
+    smoothed_center: Optional[tuple[float, float]] = None
+    smoothed_velocity: tuple[float, float] = (0.0, 0.0)
+    _smooth_alpha: float = 0.4  # EMA 平滑系数（越大响应越快，越小越稳）
 
     def update(self, bbox: tuple[int, int, int, int]):
-        """更新轨迹"""
+        """更新轨迹（带 EMA 平滑，抑制检测框抖动）"""
         self.bbox_history.append(bbox)
         if len(self.bbox_history) > self.max_history:
             self.bbox_history.pop(0)
 
-        # 计算中心点
+        # 计算中心点（原始值入历史，供画轨迹）
         cx = (bbox[0] + bbox[2]) / 2
         cy = (bbox[1] + bbox[3]) / 2
         self.center_history.append((cx, cy))
         if len(self.center_history) > self.max_history:
             self.center_history.pop(0)
 
-        # 计算速度（像素/帧）
-        if len(self.center_history) >= 2:
-            vx = self.center_history[-1][0] - self.center_history[-2][0]
-            vy = self.center_history[-1][1] - self.center_history[-2][1]
-            self.velocities.append((vx, vy))
-            if len(self.velocities) > self.max_history:
-                self.velocities.pop(0)
+        # EMA 平滑中心点
+        alpha = self._smooth_alpha
+        if self.smoothed_center is None:
+            self.smoothed_center = (cx, cy)
+            self.velocities.append((0.0, 0.0))
+            return
 
-        # 计算加速度（像素/帧²）
+        prev_sx, prev_sy = self.smoothed_center
+        self.smoothed_center = (
+            alpha * cx + (1 - alpha) * prev_sx,
+            alpha * cy + (1 - alpha) * prev_sy,
+        )
+
+        # 速度 = 平滑中心差分，再 EMA 滤波（像素/帧）
+        raw_vx = self.smoothed_center[0] - prev_sx
+        raw_vy = self.smoothed_center[1] - prev_sy
+        ovx, ovy = self.smoothed_velocity
+        self.smoothed_velocity = (
+            alpha * raw_vx + (1 - alpha) * ovx,
+            alpha * raw_vy + (1 - alpha) * ovy,
+        )
+        self.velocities.append(self.smoothed_velocity)
+        if len(self.velocities) > self.max_history:
+            self.velocities.pop(0)
+
+        # 加速度 = 平滑速度差分（像素/帧²）
         if len(self.velocities) >= 2:
             ax = self.velocities[-1][0] - self.velocities[-2][0]
             ay = self.velocities[-1][1] - self.velocities[-2][1]
@@ -66,14 +87,15 @@ class TrackedObject:
 
     @property
     def current_center(self) -> Optional[tuple[float, float]]:
-        return self.center_history[-1] if self.center_history else None
+        """当前中心点（平滑后，用于受力箭头绘制）"""
+        return self.smoothed_center or (
+            self.center_history[-1] if self.center_history else None
+        )
 
     @property
     def current_velocity(self) -> tuple[float, float]:
-        """当前速度 (vx, vy)，像素/帧"""
-        if self.velocities:
-            return self.velocities[-1]
-        return (0.0, 0.0)
+        """当前速度 (vx, vy)，像素/帧（已平滑）"""
+        return self.smoothed_velocity
 
     @property
     def current_acceleration(self) -> tuple[float, float]:

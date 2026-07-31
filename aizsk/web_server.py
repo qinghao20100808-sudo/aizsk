@@ -23,6 +23,7 @@ from flask import Flask, Response, jsonify, render_template, request, send_file
 
 from .detector import Detection, YOLODetector
 from .physics import PhysicsEngine, SceneType
+from .roi_tracker import ROITracker
 from .scene import SceneAnalyzer
 from .tracker import Tracker, TrackedObject
 from .visualizer import ForceVisualizer
@@ -459,12 +460,7 @@ class SimulationStream:
                 )
                 if tracked:
                     selected_tracked = tracked
-                    # 从模拟数据获取速度和加速度
-                    sim_obj = self.simulation.objects[0] if self.simulation.objects else None
-                    if sim_obj:
-                        tracked.velocities.append((sim_obj.vx, sim_obj.vy))
-                        if len(tracked.velocities) > tracked.max_history:
-                            tracked.velocities.pop(0)
+                    # 速度/加速度由 tracker 内部 EMA 平滑计算（模拟 bbox 精确，平滑无副作用）
 
                     # 场景类型（从模拟场景获取）
                     scene_type = self.simulation.scene_type
@@ -616,13 +612,18 @@ class WebServer:
 
         # 浏览器摄像头模式的全局状态
         self._detector = YOLODetector()
-        self._detector_loaded = False
+        self._detector_loaded = False  # 懒加载：框选跟踪模式不需要 YOLO
         self._tracker = Tracker()
         self._physics = PhysicsEngine()
         self._scene_analyzer = SceneAnalyzer()
         self._selected_track_id: Optional[int] = None
         self._selected_scene: SceneType = SceneType.UNKNOWN
         self._incline_angle: float = 0.0
+
+        # ROI 框选跟踪（大疆追车式，省算力，不跑 YOLO）
+        self._roi_tracker = ROITracker()
+        self._roi_tracked: Optional[TrackedObject] = None
+        self._last_frame_size: Optional[tuple[int, int]] = None  # (W, H) 用于悬空判断
 
         self.app = Flask(__name__, static_folder="static")
         self._setup_routes()
@@ -687,26 +688,35 @@ class WebServer:
                 "model_loaded": self.camera.model_loaded,
             })
 
+        @app.route("/api/reset", methods=["POST"])
+        def reset_selection():
+            """重置选中状态（前端 R 键调用）"""
+            self._tracker.reset()
+            self._roi_tracker.clear()
+            self._roi_tracked = None
+            self._selected_track_id = None
+            self._selected_scene = SceneType.UNKNOWN
+            self._incline_angle = 0.0
+            return jsonify({"success": True})
+
         @app.route("/api/detect/start", methods=["POST"])
         def detect_start():
-            """初始化检测器（浏览器摄像头模式）"""
-            if not self._detector_loaded:
-                self._detector_loaded = self._detector.load()
-                # 重置状态
-                self._tracker.reset()
-                self._selected_track_id = None
-                self._selected_scene = SceneType.UNKNOWN
-            return jsonify({"success": self._detector_loaded, "model_loaded": self._detector_loaded})
+            """初始化/重置检测状态（浏览器摄像头模式）"""
+            self._roi_tracker.clear()
+            self._roi_tracked = None
+            self._tracker.reset()
+            self._selected_track_id = None
+            self._selected_scene = SceneType.UNKNOWN
+            self._incline_angle = 0.0
+            return jsonify({"success": True, "model_loaded": self._detector_loaded})
 
         @app.route("/api/detect", methods=["POST"])
         def detect_frame():
             """处理前端发来的摄像头帧
             接收：multipart/form-data 包含 image (JPEG) + 可选参数
             返回：JSON 包含检测结果和受力分析
+                  mode: roi=框选跟踪（不跑 YOLO）/ yolo=目标识别
             """
-            if not self._detector_loaded:
-                return jsonify({"success": False, "error": "模型未加载"})
-
             # 读取上传的图片
             if "image" not in request.files:
                 return jsonify({"success": False, "error": "缺少 image 字段"})
@@ -721,6 +731,7 @@ class WebServer:
             frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
             if frame is None:
                 return jsonify({"success": False, "error": "图片解码失败"})
+            self._last_frame_size = (frame.shape[1], frame.shape[0])
 
             # 获取前端参数
             click_x = request.form.get("click_x", type=int)
@@ -737,6 +748,65 @@ class WebServer:
                     self._incline_angle = incline_angle
                 except ValueError:
                     pass
+
+            # —— ROI 框选跟踪模式（优先；纯光流跟踪，不跑 YOLO，省算力）——
+            roi_str = request.form.get("roi", "")
+            if roi_str:
+                try:
+                    rx1, ry1, rx2, ry2 = map(int, roi_str.split(","))
+                    if self._roi_tracker.init(frame, (rx1, ry1, rx2, ry2)):
+                        self._roi_tracked = TrackedObject(track_id=1, class_name="目标")
+                        self._selected_track_id = 1
+                        self._selected_scene = SceneType.UNKNOWN  # 新目标重新推断场景
+                        self._incline_angle = 0.0
+                except ValueError:
+                    pass
+
+            if self._roi_tracker.is_active():
+                # 纯跟踪路径：光流跟踪 + 遮挡运动外推（不加载 YOLO）
+                _ok, bbox = self._roi_tracker.update(frame)
+                tracking_state = self._roi_tracker.state  # tracking / predicting / lost
+                detections = []
+                if bbox is not None and self._roi_tracked is not None:
+                    self._roi_tracked.update(bbox)  # 复用 TrackedObject：平滑 + 物理分析
+                    det = Detection(
+                        class_id=-1, class_name="目标", confidence=1.0, bbox=bbox,
+                    )
+                    det.track_id = 1
+                    detections.append(det)
+
+                analysis_json = (
+                    self._serialize_analysis(self._roi_tracked, mass_val, mass_unknown)
+                    if self._roi_tracked is not None else None
+                )
+                velocity_info = self._serialize_velocity(self._roi_tracked)
+
+                detections_json = []
+                for det in detections:
+                    detections_json.append({
+                        "track_id": det.track_id,
+                        "class_name": det.class_name,
+                        "confidence": round(det.confidence, 2),
+                        "bbox": list(det.bbox),
+                        "selected": True,
+                    })
+
+                return jsonify({
+                    "success": True,
+                    "mode": "roi",
+                    "tracking_state": tracking_state,
+                    "detections": detections_json,
+                    "selected_id": 1 if detections else None,
+                    "analysis": analysis_json,
+                    "velocity": velocity_info,
+                    "scene": self._selected_scene.value if self._selected_scene else "unknown",
+                })
+
+            # YOLO 目标识别模式（懒加载：仅在未使用框选跟踪时加载）
+            if not self._detector_loaded:
+                self._detector_loaded = self._detector.load()
+                if not self._detector_loaded:
+                    return jsonify({"success": False, "error": "YOLO 模型加载失败"})
 
             # YOLO 检测（超低阈值识别小物体）
             result = self._detector.detect(frame, conf_threshold=0.05)
@@ -785,41 +855,27 @@ class WebServer:
                     self._tracker.update([virtual_det])
                     self._selected_track_id = virtual_det.track_id
                     result.detections.append(virtual_det)
+            elif request.form.get("auto_select") == "1" and self._selected_track_id is None:
+                # 后端自动选中：最小非人物体（免去前端二次检测请求）
+                candidates = [
+                    d for d in result.detections
+                    if d.class_name != "person" and d.class_id >= 0
+                ]
+                if candidates:
+                    smallest = min(
+                        candidates,
+                        key=lambda d: (d.bbox[2] - d.bbox[0]) * (d.bbox[3] - d.bbox[1]),
+                    )
+                    self._selected_track_id = smallest.track_id
 
-            # 受力分析
+            # 受力分析（复用序列化 helper，与 ROI 分支一致）
             analysis_json = None
             if self._selected_track_id is not None:
                 tracked = self._tracker.get_tracked_object(self._selected_track_id)
                 if tracked:
-                    # 用模拟的物理推理（基于场景类型）
-                    analysis = self._physics.analyze(
-                        tracked,
-                        scene_type=self._selected_scene,
-                        incline_angle=self._incline_angle,
-                        mass=mass_val if not mass_unknown else 1.0,
-                        mass_unknown=mass_unknown,
+                    analysis_json = self._serialize_analysis(
+                        tracked, mass_val, mass_unknown
                     )
-                    # 序列化为 JSON
-                    forces = []
-                    for f in analysis.forces:
-                        forces.append({
-                            "type": f.type.value,
-                            "magnitude": round(f.magnitude, 1),
-                            "angle": round(f.angle, 1),
-                            "label": f.label,
-                            "color": list(f.color),
-                        })
-                    net = analysis.net_force
-                    analysis_json = {
-                        "scene": analysis.scene_type.value,
-                        "note": analysis.note,
-                        "forces": forces,
-                        "net_force": {
-                            "magnitude": round(net.magnitude, 1),
-                            "angle": round(net.angle, 1),
-                            "label": net.label,
-                        },
-                    }
 
             # 序列化检测结果
             detections_json = []
@@ -836,16 +892,12 @@ class WebServer:
             velocity_info = None
             if self._selected_track_id is not None:
                 tracked = self._tracker.get_tracked_object(self._selected_track_id)
-                if tracked:
-                    velocity_info = {
-                        "vx": round(tracked.current_velocity[0], 2),
-                        "vy": round(tracked.current_velocity[1], 2),
-                        "speed": round(tracked.speed, 2),
-                        "is_moving": tracked.is_moving(),
-                    }
+                velocity_info = self._serialize_velocity(tracked)
 
             return jsonify({
                 "success": True,
+                "mode": "yolo",
+                "tracking_state": None,
                 "detections": detections_json,
                 "selected_id": self._selected_track_id,
                 "analysis": analysis_json,
@@ -853,18 +905,64 @@ class WebServer:
                 "scene": self._selected_scene.value if self._selected_scene else "unknown",
             })
 
+    def _serialize_analysis(
+        self, tracked: TrackedObject, mass_val: float, mass_unknown: bool
+    ) -> dict:
+        """受力分析 → JSON（ROI 跟踪与 YOLO 识别共用）"""
+        analysis = self._physics.analyze(
+            tracked,
+            scene_type=self._selected_scene,
+            incline_angle=self._incline_angle,
+            mass=mass_val if not mass_unknown else 1.0,
+            mass_unknown=mass_unknown,
+            frame_size=self._last_frame_size,
+        )
+        forces = []
+        for f in analysis.forces:
+            forces.append({
+                "type": f.type.value,
+                "magnitude": round(f.magnitude, 1),
+                "angle": round(f.angle, 1),
+                "label": f.label,
+                "color": list(f.color),
+            })
+        net = analysis.net_force
+        return {
+            "scene": analysis.scene_type.value,
+            "note": analysis.note,
+            "forces": forces,
+            "net_force": {
+                "magnitude": round(net.magnitude, 1),
+                "angle": round(net.angle, 1),
+                "label": net.label,
+            },
+        }
+
+    def _serialize_velocity(self, tracked: Optional[TrackedObject]) -> Optional[dict]:
+        """速度信息 → JSON（含轨迹点，供前端画慢动作轨迹线）"""
+        if tracked is None:
+            return None
+        trail = [
+            [round(c[0], 1), round(c[1], 1)]
+            for c in tracked.center_history[-20:]
+        ]
+        return {
+            "vx": round(tracked.current_velocity[0], 2),
+            "vy": round(tracked.current_velocity[1], 2),
+            "speed": round(tracked.speed, 2),
+            "is_moving": tracked.is_moving(),
+            "trail": trail,
+        }
+
     def start(self, camera: Optional[CameraStream] = None):
         """启动服务器"""
         self.camera = camera
 
-        # 如果没有传 camera，启用浏览器摄像头模式并预加载 YOLO
+        # 如果没有传 camera，启用浏览器摄像头模式。
+        # YOLO 懒加载：框选跟踪（ROI）模式不需要 YOLO，省内存省算力，
+        # 仅当用户使用目标识别模式时才在 /api/detect 中加载。
         if camera is None:
-            logger.info("📷 浏览器摄像头模式 - YOLO 模型预加载中...")
-            self._detector_loaded = self._detector.load()
-            if self._detector_loaded:
-                logger.info("✅ YOLO 模型已加载，等待前端连接")
-            else:
-                logger.warning("⚠️ YOLO 模型加载失败")
+            logger.info("📷 浏览器摄像头模式 - 框选跟踪已启用（不跑 YOLO）；YOLO 按需加载")
 
         logger.info(f"🌐 Web 服务器启动: http://{self.host}:{self.port}")
         self.app.run(

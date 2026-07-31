@@ -129,8 +129,10 @@ header h1 { font-size: 20px; font-weight: 600; background: linear-gradient(90deg
     <div class="panel">
       <button class="btn primary" id="btnToggle">▶ 启动摄像头</button>
       <p class="instructions">
-        点击画面中的位置进行受力分析<br>
-        <kbd>R</kbd> 重置选择
+        拖拽画框选定目标 → 纯跟踪模式（省算力）<br>
+        目标被遮挡时自动按运动规律预判位置<br>
+        点击画面任意位置可快速分析<br>
+        <kbd>R</kbd> 重置
       </p>
     </div>
   </div>
@@ -150,6 +152,16 @@ let currentScene = 'unknown';
 let currentAngle = 30;
 let lastDetectResult = null;
 let pendingClick = null; // {x, y} 待处理的点击
+
+// 框选跟踪交互状态（大疆追车式：拖拽画框选目标）
+let isDragging = false;
+let dragStart = null;  // 640 空间
+let dragRect = null;   // {x1,y1,x2,y2} 640 空间
+let detectIntervalMs = 500;
+
+// 检测帧统一降采样到 640 宽（后端检测空间），JPEG 从 MB 级降到 ~60KB
+const CAP_W = 640;
+const captureCanvas = document.createElement('canvas');
 
 const canvas = document.getElementById('displayCanvas');
 const ctx = canvas.getContext('2d');
@@ -181,7 +193,7 @@ const CN_CLASS = {
 async function startCamera() {
   try {
     videoStream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { min: 640, ideal: 1920, max: 3840 }, height: { min: 480, ideal: 1080, max: 2160 }, facingMode: 'environment' },
+      video: { width: { ideal: 1280, max: 1920 }, height: { ideal: 720, max: 1080 }, facingMode: 'environment' },
       audio: false,
     });
     capVideo.srcObject = videoStream;
@@ -223,6 +235,11 @@ function renderLoop() {
   // 画摄像头帧
   ctx.drawImage(capVideo, 0, 0, w, h);
 
+  // 拖拽画框中 → 显示选择框
+  if (isDragging && dragRect) {
+    drawDragRect();
+  }
+
   // 如果有检测结果，画覆盖层
   if (lastDetectResult) {
     drawOverlays(lastDetectResult);
@@ -231,30 +248,60 @@ function renderLoop() {
   animFrameId = requestAnimationFrame(renderLoop);
 }
 
-// ===== 画覆盖层 =====
+// 拖拽中的选择框（半透明红色虚线框）
+function drawDragRect() {
+  const scale = canvas.width / CAP_W;
+  const {x1,y1,x2,y2} = dragRect;
+  const sx = x1*scale, sy = y1*scale, sw = (x2-x1)*scale, sh = (y2-y1)*scale;
+  ctx.fillStyle = 'rgba(255,80,80,0.15)';
+  ctx.fillRect(sx, sy, sw, sh);
+  ctx.strokeStyle = 'rgba(255,80,80,0.95)';
+  ctx.lineWidth = 2 * scale;
+  ctx.setLineDash([6*scale, 4*scale]);
+  ctx.strokeRect(sx, sy, sw, sh);
+  ctx.setLineDash([]);
+  ctx.font = `${Math.round(13*scale)}px monospace`;
+  ctx.fillStyle = '#ff6666';
+  ctx.fillText('松开完成框选', sx + 8*scale, sy - 8*scale);
+}
+
+// ===== 画覆盖层（后端返回的 bbox/力都在 640 检测空间，×scale 映射到 canvas）=====
 function drawOverlays(data) {
   const w = canvas.width, h = canvas.height;
-  const scale = w / 640;
+  const scale = w / CAP_W;
 
-  // 检测框
+  // 检测框（ROI 模式按跟踪状态着色：跟踪=绿实线 / 遮挡预测=橙虚线 / 丢失=红虚线）
   for (const det of data.detections || []) {
     const [x1,y1,x2,y2] = det.bbox;
     const isSel = det.selected;
-    ctx.strokeStyle = isSel ? '#00ff88' : '#ffffff';
+    let strokeStyle = '#ffffff', labelColor = '#ffffff', dash = [];
+    if (data.mode === 'roi') {
+      if (data.tracking_state === 'predicting') { strokeStyle = '#ffaa00'; labelColor = '#ffaa00'; dash = [6*scale,4*scale]; }
+      else if (data.tracking_state === 'lost')   { strokeStyle = '#ff4444'; labelColor = '#ff4444'; dash = [3*scale,5*scale]; }
+      else                                       { strokeStyle = '#00ff88'; labelColor = '#00ff88'; }
+    } else {
+      strokeStyle = isSel ? '#00ff88' : '#ffffff';
+      labelColor = isSel ? '#00ff88' : '#ffffff';
+    }
+    ctx.strokeStyle = strokeStyle;
     ctx.lineWidth = (isSel ? 3 : 1.5) * scale;
-    ctx.strokeRect(x1, y1, x2-x1, y2-y1);
+    ctx.setLineDash(dash);
+    ctx.strokeRect(x1*scale, y1*scale, (x2-x1)*scale, (y2-y1)*scale);
+    ctx.setLineDash([]);
 
     const cnName = CN_CLASS[det.class_name] || det.class_name;
-    const label = `#${det.track_id} ${cnName} ${(det.confidence*100).toFixed(0)}%`;
+    let label = `#${det.track_id} ${cnName} ${(det.confidence*100).toFixed(0)}%`;
+    if (data.mode === 'roi' && data.tracking_state === 'predicting') label = `☁ ${cnName} 遮挡预测中`;
+    if (data.mode === 'roi' && data.tracking_state === 'lost') label = `✖ ${cnName} 已丢失`;
     ctx.font = `${Math.round(14 * scale)}px monospace`;
     const tw = ctx.measureText(label).width;
     ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillRect(x1, y1-Math.round(20*scale), tw+8*scale, Math.round(20*scale));
-    ctx.fillStyle = isSel ? '#00ff88' : '#ffffff';
-    ctx.fillText(label, x1+4*scale, y1-5*scale);
+    ctx.fillRect(x1*scale, y1*scale-Math.round(20*scale), tw+8*scale, Math.round(20*scale));
+    ctx.fillStyle = labelColor;
+    ctx.fillText(label, x1*scale+4*scale, y1*scale-5*scale);
 
     if (isSel) {
-      const cx = (x1+x2)/2, cy = (y1+y2)/2;
+      const cx = (x1+x2)/2*scale, cy = (y1+y2)/2*scale;
       ctx.strokeStyle = '#00ff88';
       ctx.lineWidth = 1 * scale;
       ctx.beginPath();
@@ -269,7 +316,7 @@ function drawOverlays(data) {
     const det = (data.detections || []).find(d => d.track_id === data.selected_id);
     if (det) {
       const [x1,y1,x2,y2] = det.bbox;
-      const cx = (x1+x2)/2, cy = (y1+y2)/2;
+      const cx = (x1+x2)/2*scale, cy = (y1+y2)/2*scale;
 
       for (const f of data.analysis.forces) {
         drawArrow(ctx, cx, cy, f, scale);
@@ -280,12 +327,27 @@ function drawOverlays(data) {
 
       if (data.velocity) {
         const {vx,vy} = data.velocity;
-        if (Math.sqrt(vx*vx+vy*vy) > 0.5) {
+        if (Math.sqrt(vx*vx+vy*vy) > 2) {
           ctx.strokeStyle = '#00ff00'; ctx.lineWidth = 2 * scale;
           ctx.beginPath();
           ctx.moveTo(cx, cy);
           ctx.lineTo(cx + vx*5*scale, cy + vy*5*scale);
           ctx.stroke();
+        }
+        // 运动轨迹（慢动作视觉：回放下落/移动路径）
+        if (data.velocity.trail && data.velocity.trail.length >= 2) {
+          const pts = data.velocity.trail;
+          ctx.strokeStyle = 'rgba(0,255,200,0.65)';
+          ctx.lineWidth = 2 * scale;
+          ctx.beginPath();
+          ctx.moveTo(pts[0][0]*scale, pts[0][1]*scale);
+          for (const [px,py] of pts) ctx.lineTo(px*scale, py*scale);
+          ctx.stroke();
+          // 起点标记
+          ctx.fillStyle = 'rgba(0,255,200,0.8)';
+          ctx.beginPath();
+          ctx.arc(pts[0][0]*scale, pts[0][1]*scale, 3*scale, 0, Math.PI*2);
+          ctx.fill();
         }
       }
     }
@@ -296,7 +358,13 @@ function drawOverlays(data) {
 }
 
 function drawArrow(ctx, x, y, f, scale) {
-  const len = f.magnitude * 2.5 * scale;
+  // 力线长度压缩到统一区间 [30,70]px（640 空间）：
+  // - 弱力（摩擦力/阻力）不会太短（下限 30，比 G 略长也符合直觉）
+  // - 强力（外力/加速拉力）不会爆炸（上限 70）
+  // - 等值力（静止悬挂 T=G、水平面 N=G）自然等长
+  // - 差值力（向上加速 T>G）在区间内体现长度差异
+  const MIN_LEN = 30, MAX_LEN = 70;
+  const len = Math.min(MAX_LEN, Math.max(MIN_LEN, f.magnitude * 2.5)) * scale;
   if (len < 3) return;
   const rad = f.angle * Math.PI / 180;
   const ex = x + len * Math.cos(rad);
@@ -305,7 +373,7 @@ function drawArrow(ctx, x, y, f, scale) {
 
   ctx.strokeStyle = `rgb(${r},${g},${b})`;
   ctx.fillStyle = `rgb(${r},${g},${b})`;
-  ctx.lineWidth = Math.max(2, f.magnitude/20) * scale;
+  ctx.lineWidth = 2.5 * scale;  // 统一线宽，不再随力大小变粗
 
   ctx.beginPath();
   ctx.moveTo(x, y);
@@ -329,20 +397,26 @@ function drawArrow(ctx, x, y, f, scale) {
 }
 
 // ===== 检测请求 =====
-async function sendDetect(clickX, clickY) {
+// roiStr: "x1,y1,x2,y2"（640 空间）→ 框选跟踪模式；null → 点击/YOLO 模式
+async function sendDetect(clickX, clickY, roiStr) {
   if (!isRunning || !capVideo.videoWidth) return;
 
-  const capCanvas = document.createElement('canvas');
-  capCanvas.width = canvas.width;
-  capCanvas.height = canvas.height;
-  capCanvas.getContext('2d').drawImage(capVideo, 0, 0);
-  const blob = await new Promise(r => capCanvas.toBlob(r, 'image/jpeg', 0.7));
+  // 降采样到 CAP_W 宽（后端检测空间）：
+  // 1) JPEG 体积从全分辨率下的 MB 级降到 ~60KB，传输延迟大减
+  // 2) 后端推理输入小，速度快数倍
+  const capH = Math.round(canvas.height * CAP_W / canvas.width);
+  captureCanvas.width = CAP_W;
+  captureCanvas.height = capH;
+  captureCanvas.getContext('2d').drawImage(capVideo, 0, 0, CAP_W, capH);
+  const blob = await new Promise(r => captureCanvas.toBlob(r, 'image/jpeg', 0.75));
 
   const fd = new FormData();
   fd.append('image', blob, 'frame.jpg');
   fd.append('scene', currentScene);
   fd.append('angle', currentAngle);
   fd.append('mass', getMass());
+  fd.append('auto_select', '1'); // 后端自动选中最小非人物体（未选中时）
+  if (roiStr) fd.append('roi', roiStr);
   if (clickX != null) fd.append('click_x', clickX);
   if (clickY != null) fd.append('click_y', clickY);
 
@@ -351,42 +425,87 @@ async function sendDetect(clickX, clickY) {
     const data = await res.json();
     if (!data.success) return;
     lastDetectResult = data;
+    // 发送间隔自适应：ROI 纯跟踪便宜 → 提频；自由落体 → 100ms 高频采样（慢动作）；
+    // YOLO 识别 → 降频省带宽
+    let want = 500;
+    if (data.mode === 'roi') {
+      want = (data.analysis && data.analysis.scene === 'free_fall') ? 100 : 200;
+    }
+    if (want !== detectIntervalMs) {
+      detectIntervalMs = want;
+      clearInterval(detectInterval);
+      detectInterval = setInterval(autoDetect, detectIntervalMs);
+    }
   } catch(e) { console.error('Detect error:', e); }
 }
 
-// ===== 定时检测 + 自动选中 =====
+// ===== 定时检测 =====
+// 空闲时不发帧（省算力，等用户框选/点击）；ROI 跟踪或已选中的 YOLO 才持续发帧
 async function autoDetect() {
   if (!isRunning) return;
-  await sendDetect(null, null);
-  // 如果检测到物体但未选中，自动选中最小非人物体
-  if (lastDetectResult && lastDetectResult.selected_id == null && lastDetectResult.detections && lastDetectResult.detections.length > 0) {
-    const sorted = [...lastDetectResult.detections].sort((a, b) => {
-      const aP = a.class_name === 'person' ? 1 : 0;
-      const bP = b.class_name === 'person' ? 1 : 0;
-      if (aP !== bP) return aP - bP;
-      return (a.bbox[2]-a.bbox[0])*(a.bbox[3]-a.bbox[1]) - (b.bbox[2]-b.bbox[0])*(b.bbox[3]-b.bbox[1]);
-    });
-    const target = sorted[0];
-    const cx = Math.round((target.bbox[0]+target.bbox[2])/2);
-    const cy = Math.round((target.bbox[1]+target.bbox[3])/2);
-    await sendDetect(cx, cy);
+  const lr = lastDetectResult;
+  if (!lr) return;
+  if (lr.mode === 'roi' || (lr.mode === 'yolo' && lr.selected_id != null)) {
+    await sendDetect(null, null);
   }
 }
 
-// ===== 点击处理（直接在 canvas 上）=====
-canvas.addEventListener('click', async (e) => {
-  if (!isRunning) return;
+// ===== 鼠标交互（大疆式框选：拖拽画框选目标，点击保留快速分析）=====
+function canvasPos(e) {
   const rect = canvas.getBoundingClientRect();
-  const scaleX = canvas.width / rect.width;
-  const scaleY = canvas.height / rect.height;
-  const x = Math.round((e.clientX - rect.left) * scaleX);
-  const y = Math.round((e.clientY - rect.top) * scaleY);
-  // 发送点击检测
-  await sendDetect(x, y);
+  const capH = Math.round(canvas.height * CAP_W / canvas.width);
+  return {
+    x: Math.round((e.clientX - rect.left) / rect.width * CAP_W),
+    y: Math.round((e.clientY - rect.top) / rect.height * capH),
+  };
+}
+
+canvas.addEventListener('mousedown', (e) => {
+  if (!isRunning) return;
+  const p = canvasPos(e);
+  isDragging = true;
+  dragStart = p;
+  dragRect = { x1: p.x, y1: p.y, x2: p.x, y2: p.y };
+});
+
+canvas.addEventListener('mousemove', (e) => {
+  if (!isDragging || !dragStart) return;
+  const p = canvasPos(e);
+  dragRect = {
+    x1: Math.min(dragStart.x, p.x),
+    y1: Math.min(dragStart.y, p.y),
+    x2: Math.max(dragStart.x, p.x),
+    y2: Math.max(dragStart.y, p.y),
+  };
+});
+
+canvas.addEventListener('mouseup', async (e) => {
+  if (!isDragging || !dragStart) return;
+  isDragging = false;
+  const p = canvasPos(e);
+  const dx = Math.abs(p.x - dragStart.x), dy = Math.abs(p.y - dragStart.y);
+  const rect = dragRect;
+  dragRect = null; dragStart = null;
+
+  if (dx < 8 && dy < 8) {
+    // 位移极小 → 视为点击（保留快速分析兜底）
+    await sendDetect(p.x, p.y);
+  } else {
+    // 拖拽框选 → 纯跟踪模式（不跑 YOLO）
+    if ((rect.x2-rect.x1) >= 8 && (rect.y2-rect.y1) >= 8) {
+      await sendDetect(null, null, `${rect.x1},${rect.y1},${rect.x2},${rect.y2}`);
+    }
+  }
 });
 
 // ===== 侧栏更新 =====
 function updateSidebar(data) {
+  // header 显示当前模式
+  if (data.mode === 'roi') {
+    statusText.textContent = '框选跟踪（不跑 YOLO）';
+  } else if (data.mode === 'yolo') {
+    statusText.textContent = '目标识别';
+  }
   const sel = (data.detections || []).find(d => d.selected);
   const oS = document.getElementById('objStatus');
   const oC = document.getElementById('objClass');
@@ -396,10 +515,19 @@ function updateSidebar(data) {
   const aN = document.getElementById('analysisNote');
 
   if (sel) {
-    oS.textContent = '已选中'; oS.style.color = '#44ff88';
+    // ROI 模式：显示跟踪状态
+    if (lastDetectResult && lastDetectResult.mode === 'roi') {
+      const st = lastDetectResult.tracking_state;
+      if (st === 'predicting') { oS.textContent = '遮挡预测中'; oS.style.color = '#ffaa00'; }
+      else if (st === 'lost')  { oS.textContent = '已丢失'; oS.style.color = '#ff4444'; }
+      else                     { oS.textContent = '跟踪中'; oS.style.color = '#44ff88'; }
+    } else {
+      oS.textContent = '已选中'; oS.style.color = '#44ff88';
+    }
     oC.textContent = CN_CLASS[sel.class_name] || sel.class_name;
     oI.textContent = '#' + sel.track_id;
-    oSp.textContent = (data.velocity?.speed || 0).toFixed(1) + ' 像素/帧';
+    // 速度换算为像素/秒（后端单位 px/帧，间隔自适应）
+    oSp.textContent = ((data.velocity?.speed || 0) * (1000/detectIntervalMs)).toFixed(1) + ' 像素/秒';
     selectedTrackId = sel.track_id;
   } else {
     oS.textContent = data.selected_id ? '已选中' : '未选中';
@@ -476,6 +604,10 @@ document.getElementById('btnToggle').addEventListener('click', async () => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'r' || e.key === 'R') {
     selectedTrackId = null; lastDetectResult = null;
+    isDragging = false; dragStart = null; dragRect = null;
+    // 同步重置后端选中状态，否则下一帧又会返回旧的选中
+    fetch('/api/reset', { method: 'POST' }).catch(() => {});
+    statusText.textContent = '已重置';
     document.getElementById('objStatus').textContent = '未选中';
     document.getElementById('objStatus').style.color = '#ff4444';
     document.getElementById('objClass').textContent = '—';

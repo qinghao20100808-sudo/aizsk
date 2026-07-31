@@ -138,6 +138,7 @@ class PhysicsEngine:
         incline_angle: float = 0.0,
         mass: float = 1.0,
         mass_unknown: bool = False,
+        frame_size: Optional[tuple[int, int]] = None,  # (W, H)，用于悬空判断
     ) -> ForceAnalysis:
         """
         分析物体受力
@@ -148,9 +149,7 @@ class PhysicsEngine:
             incline_angle: 斜面角度（度）
             mass: 物体质量（kg），mass_unknown=True 时此值仅用于箭头比例
             mass_unknown: True=用户未填质量，不显示 N 值
-
-        Returns:
-            受力分析结果
+            frame_size: 检测帧尺寸 (W, H)，自动场景推断时用于判断物体是否悬空
         """
         analysis = ForceAnalysis(
             scene_type=scene_type,
@@ -182,7 +181,7 @@ class PhysicsEngine:
             self._analyze_pendulum(tracked, analysis)
         else:
             # 自动推断场景
-            self._auto_detect_scene(tracked, analysis)
+            self._auto_detect_scene(tracked, analysis, frame_size)
 
         return analysis
 
@@ -323,57 +322,101 @@ class PhysicsEngine:
             # 空气阻力与速度相反
             drag_angle = math.degrees(math.atan2(-vy, -vx)) % 360
             drag_mag = 0.01 * speed**2  # 简单空气阻力模型
+            drag_label = "f_阻" if analysis.mass_unknown else f"f_阻={drag_mag:.1f}N"
             analysis.add_force(
                 ForceType.AIR_RESISTANCE,
                 drag_mag,
                 drag_angle,
-                label=f"f_drag={drag_mag:.1f}N",
+                label=drag_label,
             )
 
     def _analyze_pendulum(
         self, tracked: TrackedObject, analysis: ForceAnalysis
     ):
-        """悬挂物体受力分析"""
+        """悬挂物体受力分析（拉力 T）
+        静止悬挂：T = G（两线等长）
+        向上加速：T > G（拉力线更长，体现加速状态）
+        """
         gravity = analysis.forces[0]
 
         # 拉力沿绳子方向（从物体指向悬挂点）
         # 简化：假设悬挂点在物体正上方
-        cx, cy = tracked.current_center or (0, 0)
         bbox = tracked.current_bbox
         if bbox:
-            # 假设悬挂点在物体上方一定距离
             tension_angle = 270  # 竖直向上
+
+            # 竖直加速度（图像 y 向下为正，ay<0 表示向上加速）
+            ax, ay = tracked.current_acceleration
+            vx, vy = tracked.current_velocity
+
+            if ay < -1.0:
+                # 向上加速 → 拉力大于重力（加速度按比例折算成力）
+                extra = abs(ay) * 2.0
+                tension_mag = gravity.magnitude + extra
+                note = f"物体向上加速运动：拉力大于重力"
+                if not analysis.mass_unknown:
+                    note = f"物体向上加速运动：拉力 {tension_mag:.1f}N > 重力 {gravity.magnitude:.1f}N"
+            elif abs(vx) > 1:
+                # 有水平速度 → 单摆
+                tension_mag = gravity.magnitude
+                note = "单摆运动：拉力与重力的合力提供向心力"
+            else:
+                # 静止悬挂 → 拉力 = 重力
+                tension_mag = gravity.magnitude
+                note = "静止悬挂：拉力 = 重力"
+
+            t_label = "T" if analysis.mass_unknown else f"T={tension_mag:.1f}N"
             analysis.add_force(
                 ForceType.TENSION,
-                gravity.magnitude,
+                tension_mag,
                 tension_angle,
-                label=f"T={gravity.magnitude:.1f}N",
+                label=t_label,
             )
-
-            # 如果物体有水平速度，分析单摆
-            vx, vy = tracked.current_velocity
-            if abs(vx) > 1:
-                analysis.note = "单摆运动：拉力与重力的合力提供向心力"
-            else:
-                analysis.note = "静止悬挂：拉力 = 重力"
+            analysis.note = note
 
     def _auto_detect_scene(
-        self, tracked: TrackedObject, analysis: ForceAnalysis
+        self,
+        tracked: TrackedObject,
+        analysis: ForceAnalysis,
+        frame_size: Optional[tuple[int, int]] = None,
     ):
-        """自动推断场景类型"""
+        """自动推断场景类型
+
+        关键区分：物体悬空（画面中上方、下方无支撑）→ 悬挂（拉力 T）；
+                 物体在支撑面上（贴近画面底部/下方有支撑）→ 水平面（支持力 N）。
+        悬空判定用画面位置启发式：检测框底部距画面顶部较近 → 悬空。
+        """
         bbox = tracked.current_bbox
         vx, vy = tracked.current_velocity
         speed = math.sqrt(vx**2 + vy**2)
+        ax, ay = tracked.current_acceleration
+
+        # 悬空判断：bbox 底部在画面上部区域（< 55% 高度）→ 无支撑 → 悬挂
+        suspended = False
+        if frame_size and bbox:
+            h = frame_size[1]
+            suspended = bbox[3] < h * 0.55
+
+        if suspended:
+            # 悬空：拉力场景（静止 T=G，向上加速 T>G）
+            analysis.scene_type = SceneType.PENDULUM
+            self._analyze_pendulum(tracked, analysis)
+            return
+
+        # 自由落体判定提前：竖直加速度显著且水平分量小 → 立即判为自由落体。
+        # 松手瞬间速度≈0，靠加速度触发（不等待速度积累），反应更快。
+        if abs(ax) < 2 and ay > 2:
+            analysis.scene_type = SceneType.FREE_FALL
+            self._analyze_free_fall(tracked, analysis)
+            return
 
         if speed < 2:
-            # 基本静止 → 假设在水平面上
+            # 基本静止 → 在支撑面上（水平面）
             self._analyze_flat_surface(tracked, analysis)
             analysis.scene_type = SceneType.FLAT_SURFACE
             return
 
         # 有运动 → 看加速度方向
-        ax, ay = tracked.current_acceleration
-
         if abs(ax) < 1 and ay > 3:
             # 主要是竖直向下加速 → 自由落体
             analysis.scene_type = SceneType.FREE_FALL
