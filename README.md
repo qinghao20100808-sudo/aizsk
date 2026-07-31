@@ -167,6 +167,17 @@ uv run python3 -m aizsk.verify
 
 ---
 
+## 开发环境
+
+本项目在 **WSL2（Windows Subsystem for Linux）** 中开发与运行：
+
+- 🖥️ 系统：Windows 11 宿主机 + WSL2（Ubuntu）
+- ⚡ 硬件：CPU-only（无 GPU，PyTorch CPU 推理）
+- 📷 摄像头：Windows 摄像头（如 Webcam C110）通过**共享文件模式**接入 WSL——Windows 端 ffmpeg 采集写入共享 JPEG，WSL 端读取（即 `--win-cam` 模式）
+- 🌐 浏览器：Windows 端浏览器访问 `http://localhost:<端口>`（WSL 服务端口自动转发）
+
+---
+
 ## 开源项目致谢
 
 本项目基于以下开源项目构建，感谢它们的贡献：
