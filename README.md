@@ -114,6 +114,21 @@ aizsk/
 
 ---
 
+## 开源项目致谢
+
+本项目基于以下开源项目构建，感谢它们的贡献：
+
+| 项目 | 用途 | 链接 |
+|------|------|------|
+| **PyTorch** | 深度学习框架（模型推理） | https://github.com/pytorch/pytorch |
+| **Ultralytics YOLO** | YOLOv11 目标检测模型 | https://github.com/ultralytics/ultralytics |
+| **OpenCV** | 图像处理 / 光流跟踪 | https://github.com/opencv/opencv |
+| **NumPy** | 数值计算 | https://github.com/numpy/numpy |
+| **Flask** | Web 服务器 | https://github.com/pallets/flask |
+| **uv** | Python 包管理与运行 | https://github.com/astral-sh/uv |
+
+---
+
 ## 物理推理规则
 
 ### 水平面静止
