@@ -5,6 +5,7 @@
 > 基于计算机视觉和物理推理引擎的智能高中物理教学辅助工具。
 >
 > 🔗 项目地址：https://github.com/qinghao20100808-sudo/aizsk
+> 📄 开源协议：MIT License
 
 ---
 
@@ -126,6 +127,8 @@ aizsk/
 | **NumPy** | 数值计算 | https://github.com/numpy/numpy |
 | **Flask** | Web 服务器 | https://github.com/pallets/flask |
 | **uv** | Python 包管理与运行 | https://github.com/astral-sh/uv |
+
+> ⚠️ 注意：本仓库代码采用 MIT 协议，但 **YOLO 模型权重（yolo11n.pt）遵循 AGPL-3.0**（Ultralytics 许可），分发模型文件时请遵守其许可条款。
 
 ---
 
